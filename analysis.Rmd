@@ -1,0 +1,149 @@
+---
+title: "Logistic regression workflow"
+author: "Ian Hussey"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    number_sections: no
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE,
+                      cache.lazy = FALSE)
+```
+
+```{r}
+
+# dependencies
+library(tidyverse)
+library(psych)
+library(knitr)
+library(sjPlot)
+library(broom)
+library(kableExtra)
+
+# functions
+# bootstrapped AUC values / Ruscio's A / probability of superiority
+# there are many ways to get this value but few provide bootstrapped CIs, so it was easier to write one.
+ruscios_A <- function(variable, group, data, value1 = 1, value2 = 0) {
+  # Ensure data is a data frame (e.g., not a tbl_data)
+  data <- as.data.frame(data)
+  # Select the observations for group 1
+  x <- data[data[[group]] == value1, variable]
+  # Select the observations for group 2
+  y <- data[data[[group]] == value2, variable]
+  # Matrix with difference between XY for all pairs (Guillaume Rousselet's suggestion)
+  m <- outer(x, y, FUN = "-")
+  # Convert to booleans; count ties as half true.
+  m <- ifelse(m == 0, 0.5, m > 0)
+  # Return proportion of TRUEs
+  ruscios_A <- round(mean(m), 3)
+  return(as.numeric(ruscios_A))
+}
+
+ruscios_A_boot <- function(data, variable, group, value1 = 1, value2 = 0, B = 1000) {
+  require(tidyverse)
+  require(broom)
+  ruscios_A_boot <- data %>%
+    broom::bootstrap(B) %>%
+    do(broom::tidy(ruscios_A(variable = variable,
+                             group = group,
+                             value1 = value1,
+                             value2 = value2,
+                             data = .))) %>%
+    ungroup() %>%
+    dplyr::summarize(AUC_median = round(median(x, na.rm = TRUE), 3),
+                     AUC_ci_lwr = round(quantile(x, 0.025, na.rm = TRUE), 3),
+                     AUC_ci_upr = round(quantile(x, 0.975, na.rm = TRUE), 3))
+  return(ruscios_A_boot)
+}
+
+# disable scientific notation
+options(scipen = 999) 
+
+# comment out if knitting to pdf
+options(knitr.table.format = "html")
+
+# get data
+input_data <- 
+  read.csv("data/processed_data.csv") %>%
+  mutate(group = ifelse(group == "low", 0, 
+                        ifelse(group == "high", 1, NA)))
+
+```
+
+# Model 1
+
+Binomial logistic regression: group ~ predictor
+
+```{r}
+
+# model
+model_1 <- glm(group ~ predictor, 
+               family = binomial(link="logit"), 
+               data = input_data)
+
+# output
+sjt.glm(model_1, 
+        emph.p = FALSE,
+        digits.p = 7,
+        show.aic = TRUE,
+        show.chi2 = TRUE, # model fit, should be sig
+        show.se = TRUE)
+
+# AUC value for model
+## extraction predicted probabilities
+prob <- predict(model_1, type = c("response"))
+
+## add these probabilities back to the original data frame (omitting missing values) 
+predictions <- input_data %>%
+  select(group, predictor) %>%
+  na.omit() %>%
+  mutate(prob = prob)
+
+## check auc of predicted probabilities against known groups
+AUC_with_CIs <- ruscios_A_boot(data = predictions, variable = "prob", group = "group")
+
+AUC <- paste("AUC = ", 
+             AUC_with_CIs$AUC_median, 
+             ", 95% CI = [", 
+             AUC_with_CIs$AUC_ci_lwr, 
+             ", ", 
+             AUC_with_CIs$AUC_ci_upr, 
+             "]", 
+             sep = "")
+
+```
+
+Model predictions: `r AUC`.
+
+```{r fig.height=3, fig.width=5}
+
+# plot 
+## whole model
+ggplot(predictions, aes(x = prob, y = group)) + 
+  geom_jitter(alpha = 0.3, width = .05, height = 0.05, colour = "black") + 
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), colour="black", fullrange=TRUE) +
+  ylab("Probability of high group membership") +
+  xlab("Model predictions") +
+  scale_y_continuous(breaks = c(0, .25, .5, .75, 1)) +
+  theme_classic()
+
+## individual predictors
+ggplot(model_1, aes(x = predictor, y = group)) + 
+  geom_jitter(alpha = 0.3, width = .5, height = 0.05, colour = "black") + 
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), colour="black", fullrange=TRUE) +
+  ylab("Probability of high group membership") +
+  xlab("Predictor values") +
+  scale_y_continuous(breaks = c(0, .25, .5, .75, 1)) +
+  theme_classic()
+
+```
+
