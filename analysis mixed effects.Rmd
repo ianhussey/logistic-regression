@@ -1,0 +1,163 @@
+---
+title: "Logistic regression with mixed effects"
+subtitle: "Ie AMP data where each multiple participants emit multiple dichotomous responses"
+author: "Ian Hussey"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r}
+knitr::opts_chunk$set(message=FALSE,
+                      warning=FALSE,
+                      cache.lazy=FALSE)
+```
+
+```{r}
+
+# dependencies
+library(tidyverse)
+library(psych)
+library(weights)  # for rd(), a round() alternative
+library(plotrix)  # for std.error
+library(lme4)
+library(effects)
+library(knitr)
+library(kableExtra)
+library(sjPlot)
+library(apa)
+
+# rounds all numerics in a df
+round_df <- function(df, digits) {
+  nums <- vapply(df, is.numeric, FUN.VALUE = logical(1))
+  df[,nums] <- round(df[,nums], digits = digits)
+  (df)
+}
+
+# options
+options(knitr.table.format = "html") # necessary configuration of tables
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+# Hypothesis test 1: Differences in AMP effects between IAT contrast pair conditions
+
+ie IAT_condition is a between subjects condition here
+
+```{r}
+
+AMP_data <- 
+  read.csv("data/processed_data_mixed_effects.csv") %>%
+  dplyr::filter(exclude == FALSE,
+                IAT_exclude_based_on_fast_trials == FALSE) %>%
+  dplyr::mutate(participant = as.factor(participant),
+                rating_factor = as.factor(ifelse(accuracy == 0, "negative", 
+                                                 ifelse(accuracy == 1, "positive", NA))),
+                IAT_condition = as.factor(IAT_condition)) %>%
+  dplyr::rename(prime_type = item,
+                rating = accuracy)
+
+# Check that variables that should be factors are indeed factors
+sapply(AMP_data, class)
+
+```
+
+### Plot distribution
+
+Distribution of AMP ratings.
+
+```{r fig.height=3, fig.width=5}
+
+AMP_participant_summary_data <-
+  AMP_data %>%
+  group_by(participant) %>%
+  dplyr::summarize(perc_rating = round(mean(rating), 2))
+
+ggplot(AMP_participant_summary_data, 
+       aes(perc_rating)) + 
+  geom_density(alpha=0.50) +
+  theme_classic()
+
+```
+
+## Generalised linear mixed model
+
+### Model
+
+```{r}
+
+# convergence issues with model apparently due to scale of continuous variable, so standardize and center it.
+# https://rstudio-pubs-static.s3.amazonaws.com/33653_57fc7b8e5d484c909b615d8633c01d51.html
+
+model_1 <- glmer(rating ~ prime_type * IAT_condition + (1 | participant), 
+                 family = "binomial",
+                 contrasts = list(prime_type = "contr.sum", 
+                                  IAT_condition = "contr.sum"),
+                 data = AMP_data)
+
+```
+
+### Summary
+
+```{r message=FALSE, warning=FALSE}
+
+sjt.glmer(model_1, 
+          emph.p = FALSE,
+          digits.p = 7)
+
+```
+
+### Plot effects
+
+```{r fig.height=3, fig.width=5}
+
+sjp.glmer(model_1, 
+          type = "fe")
+
+```
+
+### Table predictions
+
+Probabilities (of positive rating of prime) for each condition. NB probability = Odds Ratio / (1 + Odds Ratio). 
+
+```{r fig.height=3, fig.width=5}
+
+model_1_predicted_effects <- 
+  as.data.frame(effect("prime_type:IAT_condition", model_1)) %>%
+  rename(`IAT condition` = IAT_condition,
+         `AMP prime type` = prime_type)
+
+model_1_predicted_effects %>% 
+  round_df(2) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+```
+  
+### Plot predictions
+
+```{r fig.height=5, fig.width=8}
+
+ggplot(data = model_1_predicted_effects,
+       aes(x = `AMP prime type`, y = fit, colour = `IAT condition`)) +
+  geom_pointrange(aes(ymax = upper,
+                      ymin = lower),
+                  position = position_dodge(width = .1)) +
+  geom_line(aes(group = `IAT condition`),
+            position = position_dodge(width = .1)) +
+  ylab("Probability of rating prime positively") +
+  xlab("Prime type") +
+  scale_colour_grey() +
+  theme_classic()
+
+```
+
+NB Ideally I'd add some AUC calculations for the model as a whole, as well as logistic regression plots for the fixed effects, as in the fixed effects analysis.  
+
+
