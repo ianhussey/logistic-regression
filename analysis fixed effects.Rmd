@@ -98,17 +98,42 @@ sjt.glm(model_1,
         show.chi2 = TRUE, # model fit, should be sig
         show.se = TRUE)
 
-# AUC value for model
+# Assess model fit
+
 ## extraction predicted probabilities
-prob <- predict(model_1, type = c("response"))
+prob <- predict(model_1, type = c("response"), se.fit = TRUE)
 
 ## add these probabilities back to the original data frame (omitting missing values) 
 predictions <- input_data %>%
   select(group, predictor) %>%
   na.omit() %>%
-  mutate(prob = prob)
+  mutate(prob = prob$fit)
 
-## check auc of predicted probabilities against known groups
+## Classification table
+library(caret)
+
+confusion_matrix <- 
+  table(predictions$group, 
+        cut(predictions$prob, 
+            breaks = c(-Inf, 0.5, Inf), 
+            labels = c(0, 1))) %>%
+  confusionMatrix(.) 
+
+model_performance <- 
+  data.frame(
+    accuracy = as.numeric(confusion_matrix$overall[1]),
+    accuracy_lwr = as.numeric(confusion_matrix$overall[3]),
+    accuracy_upr = as.numeric(confusion_matrix$overall[4]),
+    sensitivity = as.numeric(confusion_matrix$byClass[1]),
+    specificity = as.numeric(confusion_matrix$byClass[2])
+  ) %>%
+  round_df(2)
+
+### print
+model_performance %>% gather() %>% kable()
+
+## Area Under Receiver Operating Characteristic Curve (AUC) value for model
+
 AUC_with_CIs <- ruscios_A_boot(data = predictions, variable = "prob", group = "group")
 
 AUC <- paste("AUC = ", 
@@ -122,7 +147,7 @@ AUC <- paste("AUC = ",
 
 ```
 
-Model predictions: `r AUC`.
+AUC: `r AUC`. 
 
 ```{r fig.height=3, fig.width=5}
 
