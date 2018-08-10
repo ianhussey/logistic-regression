@@ -113,6 +113,95 @@ sjt.glmer(model_1,
 
 ```
 
+### Bootstrap ORs
+
+For key parameters of interest
+
+```{r}
+
+# apply fixef() to the output of each boot to get fixed effects, save only this to the data frame
+model_1_boot <- bootMer(model_1, 
+                        FUN = fixef,  
+                        nsim = 1000,
+                        parallel = "multicore")
+
+model_1_boot %>%
+  as.data.frame() %>%
+  # exponentiate to convert log odds to odds ratios
+  dplyr::summarize(interaction_OR_mean   = mean(exp(prime_type1:IAT_condition1), na.rm = TRUE),  
+                   interaction_OR_median = quantile(exp(prime_type1:IAT_condition1), 0.500, na.rm = TRUE),  
+                   interaction_OR_lwr    = quantile(exp(prime_type1:IAT_condition1), 0.025, na.rm = TRUE),
+                   interaction_OR_upr    = quantile(exp(prime_type1:IAT_condition1), 0.975, na.rm = TRUE)) %>%
+  round_df(10) %>%
+  gather()
+
+# write to disk given long runtime
+save(model_1_boot, file = "data/models/model_1_boot.RData")
+load("data/models/model_1_boot.RData")
+
+```
+
+### Model performance
+
+```{r}
+
+# model performance
+# add model predictions back to the original data frame
+AMP_data$predicted_probability <- predict(model_1, type = "response")
+
+# model performance: AUC
+## custom function to do this via exact test. PIM etc would estimate this far more quickly, but somewhat black boxes some assumptions.
+ruscios_A <- function(variable, group, data, value1 = 1, value2 = 0) {
+  # Ensure data is a data frame (e.g., not a tbl_data)
+  data <- as.data.frame(data)
+  # Select the observations for group 1
+  x <- data[data[[group]] == value1, variable]
+  # Select the observations for group 2
+  y <- data[data[[group]] == value2, variable]
+  # Matrix with difference between XY for all pairs (Guillaume Rousselet's suggestion)
+  m <- outer(x, y, FUN = "-")
+  # Convert to booleans; count ties as half true.
+  m <- ifelse(m == 0, 0.5, m > 0)
+  # Return proportion of TRUEs
+  ruscios_A <- round(mean(m), 3)
+  return(as.numeric(ruscios_A))
+}
+
+# ruscios_A_boot <- function(data, variable, group, value1 = 1, value2 = 0, B = 1000) {
+#   require(tidyverse)
+#   require(broom)
+#   ruscios_A_results <- data %>%
+#     ruscios_A(variable = variable,
+#               group = group,
+#               value1 = value1,
+#               value2 = value2,
+#               data = .)
+#   
+#   ruscios_A_boot_results <- data %>%
+#     broom::bootstrap(B) %>%
+#     do(broom::tidy(ruscios_A(variable = variable,
+#                              group = group,
+#                              value1 = value1,
+#                              value2 = value2,
+#                              data = .))) %>%
+#     ungroup() %>%
+#     dplyr::summarize(AUC_ci_lwr = round(quantile(x, 0.025, na.rm = TRUE), 3),
+#                      AUC_ci_upr = round(quantile(x, 0.975, na.rm = TRUE), 3)) %>%
+#     mutate(AUC_estimate = ruscios_A_results)
+#   
+#   return(ruscios_A_boot_results)
+# }
+
+AUC_with_CIs <- ruscios_A(data = AMP_data, 
+                          variable = "predicted_probability", 
+                          group = "rating")
+
+# - bootstrapping of CIs possible using above function, but runtime is extremely long (hours)
+
+```
+
+Model AUC `r AUC_with_CIs`.
+
 ### Plot effects
 
 ```{r fig.height=3, fig.width=5}
@@ -130,8 +219,8 @@ Probabilities (of positive rating of prime) for each condition. NB probability =
 
 model_1_predicted_effects <- 
   as.data.frame(effect("prime_type:IAT_condition", model_1)) %>%
-  rename(`IAT condition` = IAT_condition,
-         `AMP prime type` = prime_type)
+  dplyr::rename(`IAT condition` = IAT_condition,
+                `AMP prime type` = prime_type)
 
 model_1_predicted_effects %>% 
   round_df(2) %>%
